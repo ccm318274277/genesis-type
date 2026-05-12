@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>创世之语</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;600&family=Inter:wght@300;400&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #000;
+  overflow: hidden;
+  font-family: 'Noto Serif SC', serif;
+  cursor: none;
+}
+
+canvas#world { position: fixed; top: 0; left: 0; z-index: 0; }
+canvas#fx { position: fixed; top: 0; left: 0; z-index: 1; pointer-events: none; }
+
+#cursor {
+  position: fixed; width: 6px; height: 6px; background: rgba(255,255,255,0.8);
+  border-radius: 50%; pointer-events: none; z-index: 100;
+  box-shadow: 0 0 20px rgba(255,255,255,0.4), 0 0 60px rgba(255,255,255,0.1);
+  transform: translate(-50%, -50%); transition: width 0.3s, height 0.3s;
+}
+
+#input-layer {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 10; display: flex; align-items: center; justify-content: center;
+}
+
+#text-display {
+  font-size: 48px; font-weight: 300; color: rgba(255,255,255,0.9);
+  letter-spacing: 8px; text-align: center; pointer-events: none;
+  text-shadow: 0 0 40px rgba(255,255,255,0.3), 0 0 80px rgba(255,255,255,0.1);
+  max-width: 80%; line-height: 1.6; z-index: 11;
+  transition: opacity 0.5s;
+}
+
+#hint {
+  position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
+  color: rgba(255,255,255,0.2); font-size: 14px; letter-spacing: 4px;
+  font-family: 'Inter', sans-serif; z-index: 20; pointer-events: none;
+  animation: hintPulse 3s ease-in-out infinite;
+}
+
+@keyframes hintPulse {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 0.5; }
+}
+
+#history {
+  position: fixed; left: 30px; top: 50%; transform: translateY(-50%);
+  z-index: 20; pointer-events: none; display: flex; flex-direction: column; gap: 8px;
+}
+.history-word {
+  font-size: 12px; color: rgba(255,255,255,0.15); letter-spacing: 2px;
+  font-family: 'Inter', sans-serif; transition: color 0.3s;
+}
+
+.flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  background: #fff; z-index: 50; pointer-events: none; opacity: 0; }
+
+</style>
+</head>
+<body>
+
+<canvas id="world"></canvas>
+<canvas id="fx"></canvas>
+<div id="cursor"></div>
+<div id="input-layer">
+  <div id="text-display"></div>
+</div>
+<div id="hint">落笔，即创世</div>
+<div id="history"></div>
+<div class="flash" id="flash"></div>
+
+<script>
+const world = document.getElementById('world');
+const wCtx = world.getContext('2d');
+const fx = document.getElementById('fx');
+const fCtx = fx.getContext('2d');
+const cursor = document.getElementById('cursor');
+const textDisplay = document.getElementById('text-display');
+const hint = document.getElementById('hint');
+const historyEl = document.getElementById('history');
+const flashEl = document.getElementById('flash');
+
+let W, H;
+function resize() {
+  W = world.width = fx.width = window.innerWidth;
+  H = world.height = fx.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+window.addEventListener('mousemove', e => {
+  cursor.style.left = e.clientX + 'px';
+  cursor.style.top = e.clientY + 'px';
+});
+
+// === World State ===
+let currentText = '';
+let worldState = {
+  skyColor: [0, 0, 0],
+  groundLevel: H,
+  hasGround: false,
+  hasSky: false,
+  stars: [],
+  mountains: [],
+  rain: [],
+  snow: [],
+  trees: [],
+  fire: [],
+  clouds: [],
+  water: { level: 0, waves: [] },
+  wind: 0,
+  lightning: [],
+  flowers: [],
+  birds: [],
+  sun: null,
+  moon: null,
+  fog: 0,
+  sakura: [],
+  cityBuildings: [],
+  darkness: 0,
+  light: 0,
+  time: 0,
+  particles: [],
+  textHistory: [],
+  earthquakeIntensity: 0,
+};
+
+const ws = worldState;
+
+// === Keyword -> Effect Mapping ===
+const keywords = {
+  '山': () => createMountains(),
+  '峰': () => createMountains(),
+  '丘': () => createMountains(true),
+  '天': () => createSky(),
+  '空': () => createSky(),
+  '星': () => createStars(),
+  '辰': () => createStars(),
+  '雨': () => startRain(),
+  '雪': () => startSnow(),
+  '树': () => createTrees(),
+  '林': () => { createTrees(); createTrees(); },
+  '森': () => { createTrees(); createTrees(); createTrees(); },
+  '火': () => startFire(),
+  '焰': () => startFire(),
+  '云': () => createClouds(),
+  '海': () => createOcean(),
+  '水': () => createWater(),
+  '河': () => createWater(),
+  '湖': () => createWater(),
+  '风': () => { ws.wind = 3; },
+  '雷': () => triggerLightning(),
+  '电': () => triggerLightning(),
+  '花': () => createFlowers(),
+  '草': () => createGrass(),
+  '鸟': () => createBirds(),
+  '日': () => createSun(),
+  '阳': () => createSun(),
+  '月': () => createMoon(),
+  '夜': () => { createMoon(); createStars(); ws.skyColor = [5, 5, 20]; },
+  '雾': () => { ws.fog = 0.6; },
+  '霾': () => { ws.fog = 0.8; },
+  '樱': () => startSakura(),
+  '城': () => createCity(),
+  '楼': () => createCity(),
+  '塔': () => createTower(),
+  '暗': () => { ws.darkness = 0.7; },
+  '黑': () => { ws.darkness = 0.9; ws.skyColor = [0, 0, 0]; },
+  '光': () => { ws.light = 1; ws.darkness = 0; flash(0.3); },
+  '亮': () => { ws.light = 0.8; },
+  '虹': () => createRainbow(),
+  '彩': () => createRainbow(),
+  '地': () => createGround(),
+  '土': () => createGround(),
+  '沙': () => createDesert(),
+  '漠': () => createDesert(),
+  '寂': () => fadeAll(),
+  '灭': () => fadeAll(),
+  '静': () => { ws.wind = 0; ws.rain = []; ws.snow = []; },
+  '空': () => { if (currentText === '空') clearWorld(); },
+  '震': () => { ws.earthquakeIntensity = 10; },
+  '爆': () => explode(),
+  '春': () => { createSun(); createFlowers(); createTrees(); createBirds(); ws.skyColor = [40, 60, 90]; },
+  '夏': () => { createSun(); ws.skyColor = [20, 50, 100]; createClouds(); },
+  '秋': () => { ws.skyColor = [50, 30, 20]; startSakura(); createMountains(); },
+  '冬': () => { startSnow(); ws.skyColor = [15, 15, 25]; ws.fog = 0.3; },
+  '梦': () => { ws.skyColor = [20, 10, 40]; createStars(); ws.fog = 0.3; createMoon(); startSakura(); },
+  '爱': () => createHearts(),
+  '心': () => createHearts(),
+  '死': () => { ws.darkness = 0.95; fadeAll(); ws.skyColor = [0, 0, 0]; },
+  '生': () => { ws.light = 1; createFlowers(); createTrees(); createBirds(); flash(0.5); ws.skyColor = [30, 50, 80]; },
+  '孤': () => { fadeAll(); ws.fog = 0.5; ws.darkness = 0.3; },
+  '独': () => { ws.fog = 0.6; },
+  '路': () => createRoad(),
+  '人': () => createPerson(),
+  'home': () => { createGround(); createTrees(); createSun(); ws.skyColor = [30, 50, 90]; },
+  'rain': () => startRain(),
+  'snow': () => startSnow(),
+  'sun': () => createSun(),
+  'moon': () => createMoon(),
+  'star': () => createStars(),
+  'fire': () => startFire(),
+  'tree': () => createTrees(),
+  'mountain': () => createMountains(),
+  'ocean': () => createOcean(),
+  'love': () => createHearts(),
+  'dark': () => { ws.darkness = 0.9; },
+  'light': () => { ws.light = 1; flash(0.3); },
+  'dream': () => { ws.skyColor = [20, 10, 40]; createStars(); createMoon(); ws.fog = 0.3; },
+};
+
+// === Creation Functions ===
+function createMountains(small) {
+  if (!ws.hasGround) createGround();
+  const count = 3 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < count; i++) {
+    ws.mountains.push({
+      x: Math.random() * W,
+      height: small ? (80 + Math.random() * 100) : (150 + Math.random() * 250),
+      width: small ? (100 + Math.random() * 100) : (200 + Math.random() * 300),
+      color: [30 + Math.random() * 20, 35 + Math.random() * 20, 45 + Math.random() * 20],
+      snowCap: Math.random() > 0.4,
+    });
+  }
+}
+
+function createSky() {
+  ws.hasSky = true;
+  ws.skyColor = [15, 20, 40];
+}
+
+function createStars() {
+  ws.hasSky = true;
+  for (let i = 0; i < 100; i++) {
+    ws.stars.push({
+      x: Math.random() * W, y: Math.random() * H * 0.7,
+      size: Math.random() * 2 + 0.5,
+      twinkle: Math.random() * Math.PI * 2,
+      speed: Math.random() * 0.02 + 0.01,
+    });
+  }
+}
+
+function startRain() {
+  for (let i = 0; i < 200; i++) {
+    ws.rain.push({
+      x: Math.random() * W, y: Math.random() * H,
+      speed: 8 + Math.random() * 8, length: 15 + Math.random() * 15,
+    });
+  }
+  ws.skyColor = [10, 12, 18];
+  createClouds();
+}
+
+function startSnow() {
+  for (let i = 0; i < 150; i++) {
+    ws.snow.push({
+      x: Math.random() * W, y: Math.random() * H,
+      size: 1 + Math.random() * 3, speed: 0.5 + Math.random() * 1.5,
+      wobble: Math.random() * Math.PI * 2, wobbleSpeed: 0.01 + Math.random() * 0.02,
+    });
+  }
+}
+
+function createTrees() {
+  if (!ws.hasGround) createGround();
+  const count = 3 + Math.floor(Math.random() * 5);
+  for (let i = 0; i < count; i++) {
+    ws.trees.push({
+      x: 50 + Math.random() * (W - 100),
+      height: 60 + Math.random() * 80,
+      width: 30 + Math.random() * 30,
+      sway: 0, swaySpeed: 0.01 + Math.random() * 0.01,
+      green: [20 + Math.random() * 30, 80 + Math.random() * 60, 20 + Math.random() * 30],
+    });
+  }
+}
+
+function startFire() {
+  if (!ws.hasGround) createGround();
+  const baseX = W * 0.3 + Math.random() * W * 0.4;
+  for (let i = 0; i < 30; i++) {
+    ws.fire.push({
+      x: baseX + (Math.random() - 0.5) * 40,
+      y: ws.groundLevel,
+      vx: (Math.random() - 0.5) * 2,
+      vy: -(2 + Math.random() * 4),
+      life: 30 + Math.random() * 30,
+      maxLife: 60,
+      size: 3 + Math.random() * 5,
+      baseX: baseX,
+    });
+  }
+}
+
+function createClouds() {
+  ws.hasSky = true;
+  for (let i = 0; i < 5; i++) {
+    ws.clouds.push({
+      x: Math.random() * W, y: 40 + Math.random() * 120,
+      width: 120 + Math.random() * 200, height: 30 + Math.random() * 40,
+      speed: 0.2 + Math.random() * 0.3, opacity: 0.1 + Math.random() * 0.15,
+    });
+  }
+}
+
+function createOcean() {
+  ws.water.level = H * 0.55;
+  ws.hasGround = false;
+  ws.groundLevel = H;
+  for (let i = 0; i < 50; i++) {
+    ws.water.waves.push({ x: i * (W / 50), offset: Math.random() * Math.PI * 2 });
+  }
+  ws.skyColor = [10, 15, 30];
+}
+
+function createWater() {
+  if (!ws.hasGround) createGround();
+  ws.water.level = ws.groundLevel - 10;
+  for (let i = 0; i < 50; i++) {
+    ws.water.waves.push({ x: i * (W / 50), offset: Math.random() * Math.PI * 2 });
+  }
+}
+
+function triggerLightning() {
+  ws.lightning.push({ x: Math.random() * W, life: 10, branches: generateLightningBranches(Math.random() * W, 0) });
+  flash(0.8);
+  createClouds();
+}
+
+function generateLightningBranches(startX, startY) {
+  const branches = [];
+  let x = startX, y = startY;
+  while (y < H * 0.8) {
+    const nx = x + (Math.random() - 0.5) * 80;
+    const ny = y + 20 + Math.random() * 40;
+    branches.push({ x1: x, y1: y, x2: nx, y2: ny });
+    if (Math.random() > 0.7) {
+      const bx = x + (Math.random() - 0.5) * 100;
+      const by = y + 30 + Math.random() * 50;
+      branches.push({ x1: x, y1: y, x2: bx, y2: by });
+    }
+    x = nx; y = ny;
+  }
+  return branches;
+}
+
+function createFlowers() {
+  if (!ws.hasGround) createGround();
+  for (let i = 0; i < 20; i++) {
+    ws.flowers.push({
+      x: 30 + Math.random() * (W - 60),
+      color: [
+        [255, 100, 120], [255, 180, 80], [180, 100, 255],
+        [255, 255, 100], [100, 200, 255], [255, 150, 200],
+      ][Math.floor(Math.random() * 6)],
+      size: 4 + Math.random() * 6, sway: Math.random() * Math.PI * 2,
+    });
+  }
+}
+
+function createGrass() {
+  if (!ws.hasGround) createGround();
+  ws.skyColor = [20, 40, 30];
+}
+
+function createBirds() {
+  for (let i = 0; i < 5; i++) {
+    ws.birds.push({
+      x: Math.random() * W, y: 50 + Math.random() * 150,
+      speed: 1 + Math.random() * 2, wingPhase: Math.random() * Math.PI * 2,
+      size: 8 + Math.random() * 8,
+    });
+  }
+}
+
+function createSun() {
+  ws.hasSky = true;
+  ws.sun = { x: W * 0.75, y: H * 0.15, size: 50, glow: 0 };
+  ws.skyColor = [30, 50, 90];
+  ws.darkness = Math.max(0, ws.darkness - 0.5);
+}
+
+function createMoon() {
+  ws.hasSky = true;
+  ws.moon = { x: W * 0.7, y: H * 0.12, size: 40 };
+  ws.skyColor = [8, 8, 20];
+}
+
+function startSakura() {
+  for (let i = 0; i < 60; i++) {
+    ws.sakura.push({
+      x: Math.random() * W, y: Math.random() * H,
+      size: 2 + Math.random() * 4, speed: 0.5 + Math.random() * 1,
+      wobble: Math.random() * Math.PI * 2, rotation: Math.random() * Math.PI * 2,
+    });
+  }
+}
+
+function createCity() {
+  if (!ws.hasGround) createGround();
+  for (let i = 0; i < 12; i++) {
+    const bw = 30 + Math.random() * 50;
+    ws.cityBuildings.push({
+      x: i * (W / 12) + Math.random() * 20,
+      width: bw, height: 80 + Math.random() * 200,
+      windows: Math.floor(Math.random() * 20) + 5,
+      color: [20 + Math.random() * 15, 25 + Math.random() * 15, 35 + Math.random() * 15],
+    });
+  }
+}
+
+function createTower() {
+  if (!ws.hasGround) createGround();
+  ws.cityBuildings.push({
+    x: W * 0.4 + Math.random() * W * 0.2,
+    width: 25, height: 300 + Math.random() * 100,
+    windows: 30, color: [35, 35, 45], isTower: true,
+  });
+}
+
+function createRainbow() {
+  ws.rainbow = true;
+}
+
+function createGround() {
+  ws.hasGround = true;
+  ws.groundLevel = H * 0.78;
+  if (ws.skyColor[0] === 0 && ws.skyColor[1] === 0 && ws.skyColor[2] === 0) {
+    ws.skyColor = [15, 20, 35];
+  }
+}
+
+function createDesert() {
+  ws.hasGround = true;
+  ws.groundLevel = H * 0.72;
+  ws.groundColor = [180, 150, 80];
+  ws.skyColor = [60, 40, 20];
+  createSun();
+}
+
+function createRoad() {
+  if (!ws.hasGround) createGround();
+  ws.road = true;
+}
+
+function createPerson() {
+  if (!ws.hasGround) createGround();
+  ws.person = { x: W * 0.5, y: ws.groundLevel };
+}
+
+function createHearts() {
+  for (let i = 0; i < 20; i++) {
+    ws.particles.push({
+      x: W * 0.3 + Math.random() * W * 0.4,
+      y: H * 0.5 + Math.random() * 100,
+      vy: -(1 + Math.random() * 2),
+      vx: (Math.random() - 0.5) * 1,
+      life: 80 + Math.random() * 60,
+      type: 'heart',
+      size: 8 + Math.random() * 12,
+      color: [255, 50 + Math.random() * 100, 80 + Math.random() * 80],
+    });
+  }
+}
+
+function fadeAll() {
+  ws.trees = []; ws.flowers = []; ws.birds = [];
+  ws.cityBuildings = []; ws.person = null;
+  ws.fire = []; ws.light = 0;
+}
+
+function clearWorld() {
+  ws.skyColor = [0, 0, 0]; ws.groundLevel = H; ws.hasGround = false;
+  ws.hasSky = false; ws.stars = []; ws.mountains = []; ws.rain = [];
+  ws.snow = []; ws.trees = []; ws.fire = []; ws.clouds = [];
+  ws.water = { level: 0, waves: [] }; ws.wind = 0; ws.lightning = [];
+  ws.flowers = []; ws.birds = []; ws.sun = null; ws.moon = null;
+  ws.fog = 0; ws.sakura = []; ws.cityBuildings = []; ws.darkness = 0;
+  ws.light = 0; ws.particles = []; ws.rainbow = false; ws.road = false;
+  ws.person = null; ws.groundColor = null;
+}
+
+function explode() {
+  flash(1);
+  for (let i = 0; i < 80; i++) {
+    const angle = (Math.PI * 2 / 80) * i;
+    const speed = 2 + Math.random() * 6;
+    ws.particles.push({
+      x: W / 2, y: H / 2,
+      vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+      life: 40 + Math.random() * 40, type: 'spark',
+      size: 2 + Math.random() * 3,
+      color: [255, 150 + Math.random() * 100, Math.random() * 100],
+    });
+  }
+  ws.earthquakeIntensity = 15;
+}
+
+function flash(intensity) {
+  flashEl.style.opacity = intensity;
+  flashEl.style.transition = 'none';
+  requestAnimationFrame(() => {
+    flashEl.style.transition = 'opacity 0.5s';
+    flashEl.style.opacity = '0';
+  });
+}
+
+// === Input Handling ===
+let inputBuffer = '';
+let displayText = '';
+let composeText = '';
+let isComposing = false;
+
+window.addEventListener('compositionstart', () => { isComposing = true; });
+window.addEventListener('compositionupdate', (e) => { composeText = e.data || ''; updateDisplay(); });
+window.addEventListener('compositionend', (e) => {
+  isComposing = false;
+  composeText = '';
+  const text = e.data || '';
+  for (const char of text) processChar(char);
+});
+
+window.addEventListener('keydown', (e) => {
+  if (isComposing) return;
+  if (e.key === 'Backspace') {
+    displayText = displayText.slice(0, -1);
+    updateDisplay();
+    return;
+  }
+  if (e.key === 'Enter') {
+    if (displayText.trim()) {
+      ws.textHistory.push(displayText.trim());
+      updateHistory();
+    }
+    displayText = '';
+    updateDisplay();
+    return;
+  }
+  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+    processChar(e.key);
+  }
+});
+
+function processChar(char) {
+  displayText += char;
+  updateDisplay();
+  hint.style.display = 'none';
+
+  // Check single char
+  if (keywords[char]) {
+    keywords[char]();
+    burstAtText(char);
+  }
+
+  // Check full word matches for English
+  const lower = displayText.toLowerCase().trim();
+  Object.keys(keywords).forEach(k => {
+    if (k.length > 1 && lower.endsWith(k)) {
+      keywords[k]();
+    }
+  });
+}
+
+function updateDisplay() {
+  const show = displayText + (composeText ? '<span style="opacity:0.4">' + composeText + '</span>' : '');
+  textDisplay.innerHTML = show + '<span style="animation:blink 1s infinite;opacity:0.6">|</span>';
+}
+
+function updateHistory() {
+  historyEl.innerHTML = ws.textHistory.slice(-10).map(w =>
+    '<div class="history-word">' + w + '</div>'
+  ).join('');
+}
+
+function burstAtText(char) {
+  for (let i = 0; i < 8; i++) {
+    ws.particles.push({
+      x: W / 2 + (Math.random() - 0.5) * 100,
+      y: H / 2 + (Math.random() - 0.5) * 50,
+      vx: (Math.random() - 0.5) * 3,
+      vy: (Math.random() - 0.5) * 3,
+      life: 30 + Math.random() * 20,
+      type: 'text',
+      size: 2,
+      color: [255, 255, 255],
+    });
+  }
+}
+
+// === Render Loop ===
+function render() {
+  ws.time++;
+
+  // Earthquake shake
+  let shakeX = 0, shakeY = 0;
+  if (ws.earthquakeIntensity > 0) {
+    shakeX = (Math.random() - 0.5) * ws.earthquakeIntensity;
+    shakeY = (Math.random() - 0.5) * ws.earthquakeIntensity;
+    ws.earthquakeIntensity *= 0.95;
+    if (ws.earthquakeIntensity < 0.1) ws.earthquakeIntensity = 0;
+  }
+
+  wCtx.save();
+  wCtx.translate(shakeX, shakeY);
+
+  // Sky
+  const sc = ws.skyColor;
+  const grad = wCtx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, 'rgb(' + sc[0] + ',' + sc[1] + ',' + sc[2] + ')');
+  grad.addColorStop(1, 'rgb(' + Math.min(sc[0] + 10, 255) + ',' + Math.min(sc[1] + 10, 255) + ',' + Math.min(sc[2] + 5, 255) + ')');
+  wCtx.fillStyle = grad;
+  wCtx.fillRect(-10, -10, W + 20, H + 20);
+
+  // Sun
+  if (ws.sun) {
+    ws.sun.glow = (ws.sun.glow + 0.02) % (Math.PI * 2);
+    const sg = wCtx.createRadialGradient(ws.sun.x, ws.sun.y, 0, ws.sun.x, ws.sun.y, ws.sun.size * 4);
+    sg.addColorStop(0, 'rgba(255,240,200,1)');
+    sg.addColorStop(0.2, 'rgba(255,200,100,0.6)');
+    sg.addColorStop(0.5, 'rgba(255,150,50,' + (0.15 + 0.05 * Math.sin(ws.sun.glow)) + ')');
+    sg.addColorStop(1, 'rgba(255,100,0,0)');
+    wCtx.fillStyle = sg;
+    wCtx.beginPath();
+    wCtx.arc(ws.sun.x, ws.sun.y, ws.sun.size * 4, 0, Math.PI * 2);
+    wCtx.fill();
+
+    wCtx.fillStyle = '#fff8e0';
+    wCtx.beginPath();
+    wCtx.arc(ws.sun.x, ws.sun.y, ws.sun.size, 0, Math.PI * 2);
+    wCtx.fill();
+  }
+
+  // Moon
+  if (ws.moon) {
+    const mg = wCtx.createRadialGradient(ws.moon.x, ws.moon.y, 0, ws.moon.x, ws.moon.y, ws.moon.size * 3);
+    mg.addColorStop(0, 'rgba(220,230,255,0.9)');
+    mg.addColorStop(0.3, 'rgba(180,200,255,0.2)');
+    mg.addColorStop(1, 'rgba(100,120,200,0)');
+    wCtx.fillStyle = mg;
+    wCtx.beginPath();
+    wCtx.arc(ws.moon.x, ws.moon.y, ws.moon.size * 3, 0, Math.PI * 2);
+    wCtx.fill();
+
+    wCtx.fillStyle = 'rgba(220,230,255,0.95)';
+    wCtx.beginPath();
+    wCtx.arc(ws.moon.x, ws.moon.y, ws.moon.size, 0, Math.PI * 2);
+    wCtx.fill();
+  }
+
+  // Stars
+  ws.stars.forEach(s => {
+    s.twinkle += s.speed;
+    const a = 0.4 + 0.6 * Math.abs(Math.sin(s.twinkle));
+    wCtx.fillStyle = 'rgba(255,255,255,' + a + ')';
+    wCtx.beginPath();
+    wCtx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+    wCtx.fill();
+  });
+
+  // Clouds
+  ws.clouds.forEach(c => {
+    c.x += c.speed + ws.wind * 0.3;
+    if (c.x > W + c.width) c.x = -c.width;
+    wCtx.fillStyle = 'rgba(200,210,220,' + c.opacity + ')';
+    for (let i = 0; i < 4; i++) {
+      wCtx.beginPath();
+      wCtx.arc(c.x + i * c.width * 0.25, c.y + Math.sin(i * 1.5) * 10, c.height * (0.8 + Math.sin(i) * 0.3), 0, Math.PI * 2);
+      wCtx.fill();
+    }
+  });
+
+  // Rainbow
+  if (ws.rainbow) {
+    const colors = ['#ff0000','#ff8800','#ffff00','#00cc00','#0066ff','#4400cc','#8800ff'];
+    colors.forEach((c, i) => {
+      wCtx.strokeStyle = c;
+      wCtx.globalAlpha = 0.2;
+      wCtx.lineWidth = 8;
+      wCtx.beginPath();
+      wCtx.arc(W * 0.5, H * 0.8, 250 + i * 10, Math.PI, 0);
+      wCtx.stroke();
+    });
+    wCtx.globalAlpha = 1;
+  }
+
+  // Mountains
+  ws.mountains.forEach(m => {
+    wCtx.fillStyle = 'rgb(' + m.color[0] + ',' + m.color[1] + ',' + m.color[2] + ')';
+    wCtx.beginPath();
+    wCtx.moveTo(m.x - m.width / 2, ws.hasGround ? ws.groundLevel : H);
+    wCtx.lineTo(m.x, (ws.hasGround ? ws.groundLevel : H) - m.height);
+    wCtx.lineTo(m.x + m.width / 2, ws.hasGround ? ws.groundLevel : H);
+    wCtx.fill();
+    if (m.snowCap) {
+      wCtx.fillStyle = 'rgba(240,245,255,0.8)';
+      const peakY = (ws.hasGround ? ws.groundLevel : H) - m.height;
+      wCtx.beginPath();
+      wCtx.moveTo(m.x - m.width * 0.1, peakY + m.height * 0.15);
+      wCtx.lineTo(m.x, peakY);
+      wCtx.lineTo(m.x + m.width * 0.1, peakY + m.height * 0.15);
+      wCtx.fill();
+    }
+  });
+
+  // City
+  ws.cityBuildings.forEach(b => {
+    wCtx.fillStyle = 'rgb(' + b.color[0] + ',' + b.color[1] + ',' + b.color[2] + ')';
+    const baseY = ws.hasGround ? ws.groundLevel : H;
+    wCtx.fillRect(b.x, baseY - b.height, b.width, b.height);
+    for (let w = 0; w < b.windows; w++) {
+      const wx = b.x + 4 + (w % 3) * ((b.width - 8) / 3);
+      const wy = baseY - b.height + 10 + Math.floor(w / 3) * 18;
+      const lit = Math.random() > 0.3;
+      wCtx.fillStyle = lit ? 'rgba(255,230,150,0.7)' : 'rgba(0,0,0,0.3)';
+      wCtx.fillRect(wx, wy, 6, 8);
+    }
+  });
+
+  // Ground
+  if (ws.hasGround) {
+    const gc = ws.groundColor || [25, 35, 20];
+    const gg = wCtx.createLinearGradient(0, ws.groundLevel, 0, H);
+    gg.addColorStop(0, 'rgb(' + gc[0] + ',' + gc[1] + ',' + gc[2] + ')');
+    gg.addColorStop(1, 'rgb(' + Math.max(gc[0] - 10, 0) + ',' + Math.max(gc[1] - 10, 0) + ',' + Math.max(gc[2] - 10, 0) + ')');
+    wCtx.fillStyle = gg;
+    wCtx.fillRect(-10, ws.groundLevel, W + 20, H - ws.groundLevel + 10);
+  }
+
+  // Road
+  if (ws.road) {
+    wCtx.fillStyle = '#2a2a2a';
+    wCtx.fillRect(0, ws.groundLevel - 3, W, 30);
+    wCtx.strokeStyle = '#555';
+    wCtx.lineWidth = 2;
+    wCtx.setLineDash([20, 15]);
+    wCtx.beginPath();
+    wCtx.moveTo(0, ws.groundLevel + 12);
+    wCtx.lineTo(W, ws.groundLevel + 12);
+    wCtx.stroke();
+    wCtx.setLineDash([]);
+  }
+
+  // Trees
+  ws.trees.forEach(t => {
+    t.sway += t.swaySpeed;
+    const s = Math.sin(t.sway + ws.wind) * (3 + ws.wind);
+    wCtx.fillStyle = '#3a2a1a';
+    wCtx.fillRect(t.x - 4, ws.groundLevel - t.height * 0.4, 8, t.height * 0.4);
+    wCtx.fillStyle = 'rgb(' + t.green[0] + ',' + t.green[1] + ',' + t.green[2] + ')';
+    wCtx.beginPath();
+    wCtx.arc(t.x + s, ws.groundLevel - t.height * 0.4 - t.width * 0.6, t.width, 0, Math.PI * 2);
+    wCtx.fill();
+    wCtx.fillStyle = 'rgba(' + (t.green[0] - 10) + ',' + (t.green[1] + 20) + ',' + (t.green[2] - 5) + ',0.8)';
+    wCtx.beginPath();
+    wCtx.arc(t.x + s - t.width * 0.3, ws.groundLevel - t.height * 0.4 - t.width * 0.3, t.width * 0.7, 0, Math.PI * 2);
+    wCtx.fill();
+  });
+
+  // Flowers
+  ws.flowers.forEach(f => {
+    f.sway += 0.02;
+    const sx = Math.sin(f.sway) * 2;
+    wCtx.fillStyle = '#3a5a2a';
+    wCtx.fillRect(f.x, ws.groundLevel - f.size * 3, 2, f.size * 3);
+    wCtx.fillStyle = 'rgb(' + f.color[0] + ',' + f.color[1] + ',' + f.color[2] + ')';
+    for (let p = 0; p < 5; p++) {
+      const angle = (Math.PI * 2 / 5) * p + ws.time * 0.005;
+      wCtx.beginPath();
+      wCtx.arc(
+        f.x + sx + Math.cos(angle) * f.size * 0.6,
+        ws.groundLevel - f.size * 3 + Math.sin(angle) * f.size * 0.6,
+        f.size * 0.45, 0, Math.PI * 2
+      );
+      wCtx.fill();
+    }
+    wCtx.fillStyle = '#ffe066';
+    wCtx.beginPath();
+    wCtx.arc(f.x + sx, ws.groundLevel - f.size * 3, f.size * 0.3, 0, Math.PI * 2);
+    wCtx.fill();
+  });
+
+  // Person
+  if (ws.person) {
+    const px = ws.person.x, py = ws.groundLevel;
+    wCtx.fillStyle = '#e0c8a0';
+    wCtx.beginPath();
+    wCtx.arc(px, py - 45, 7, 0, Math.PI * 2);
+    wCtx.fill();
+    wCtx.strokeStyle = '#555';
+    wCtx.lineWidth = 2;
+    wCtx.beginPath();
+    wCtx.moveTo(px, py - 38); wCtx.lineTo(px, py - 15);
+    wCtx.moveTo(px - 10, py - 30); wCtx.lineTo(px + 10, py - 30);
+    wCtx.moveTo(px, py - 15); wCtx.lineTo(px - 8, py);
+    wCtx.moveTo(px, py - 15); wCtx.lineTo(px + 8, py);
+    wCtx.stroke();
+  }
+
+  // Water
+  if (ws.water.level > 0) {
+    const wl = ws.water.level;
+    wCtx.fillStyle = 'rgba(20,60,120,0.6)';
+    wCtx.beginPath();
+    wCtx.moveTo(-10, H + 10);
+    for (let i = 0; i <= W; i += 10) {
+      const wave = Math.sin(i * 0.02 + ws.time * 0.03) * 5 + Math.sin(i * 0.01 + ws.time * 0.02) * 3;
+      wCtx.lineTo(i, wl + wave);
+    }
+    wCtx.lineTo(W + 10, H + 10);
+    wCtx.fill();
+    wCtx.fillStyle = 'rgba(40,100,180,0.3)';
+    wCtx.fillRect(-10, wl + 8, W + 20, H - wl);
+  }
+
+  // Fire
+  ws.fire = ws.fire.filter(f => f.life > 0);
+  ws.fire.forEach(f => {
+    f.x += f.vx + (Math.random() - 0.5) * 1;
+    f.y += f.vy * 0.5;
+    f.vy *= 0.98;
+    f.life--;
+    const ratio = f.life / f.maxLife;
+    const r = 255, g = Math.floor(150 * ratio + 50), b = Math.floor(30 * ratio);
+    wCtx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + ratio * 0.8 + ')';
+    wCtx.beginPath();
+    wCtx.arc(f.x, f.y, f.size * ratio, 0, Math.PI * 2);
+    wCtx.fill();
+    if (f.life < 5) {
+      f.x = f.baseX + (Math.random() - 0.5) * 40;
+      f.y = ws.groundLevel;
+      f.vy = -(2 + Math.random() * 4);
+      f.life = 30 + Math.random() * 30;
+    }
+  });
+
+  // Rain
+  ws.rain.forEach(r => {
+    r.y += r.speed;
+    r.x += ws.wind;
+    if (r.y > H) { r.y = -10; r.x = Math.random() * W; }
+    if (r.x > W) r.x = 0;
+    wCtx.strokeStyle = 'rgba(150,180,220,0.3)';
+    wCtx.lineWidth = 1;
+    wCtx.beginPath();
+    wCtx.moveTo(r.x, r.y);
+    wCtx.lineTo(r.x + ws.wind * 0.5, r.y + r.length);
+    wCtx.stroke();
+  });
+
+  // Snow
+  ws.snow.forEach(s => {
+    s.y += s.speed;
+    s.wobble += s.wobbleSpeed;
+    s.x += Math.sin(s.wobble) * 0.5 + ws.wind * 0.5;
+    if (s.y > H) { s.y = -5; s.x = Math.random() * W; }
+    if (s.x > W) s.x = 0; if (s.x < 0) s.x = W;
+    wCtx.fillStyle = 'rgba(255,255,255,0.8)';
+    wCtx.beginPath();
+    wCtx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+    wCtx.fill();
+  });
+
+  // Sakura
+  ws.sakura.forEach(s => {
+    s.y += s.speed;
+    s.wobble += 0.02;
+    s.rotation += 0.03;
+    s.x += Math.sin(s.wobble) * 0.8 + ws.wind * 0.5;
+    if (s.y > H) { s.y = -5; s.x = Math.random() * W; }
+    wCtx.save();
+    wCtx.translate(s.x, s.y);
+    wCtx.rotate(s.rotation);
+    wCtx.fillStyle = 'rgba(255,180,200,0.7)';
+    wCtx.beginPath();
+    wCtx.ellipse(0, 0, s.size, s.size * 0.5, 0, 0, Math.PI * 2);
+    wCtx.fill();
+    wCtx.restore();
+  });
+
+  // Birds
+  ws.birds.forEach(b => {
+    b.x += b.speed;
+    b.wingPhase += 0.08;
+    if (b.x > W + 20) b.x = -20;
+    const wy = Math.sin(b.wingPhase) * b.size * 0.4;
+    wCtx.strokeStyle = 'rgba(40,40,40,0.7)';
+    wCtx.lineWidth = 2;
+    wCtx.beginPath();
+    wCtx.moveTo(b.x - b.size, b.y + wy);
+    wCtx.quadraticCurveTo(b.x - b.size * 0.3, b.y - Math.abs(wy) * 0.5, b.x, b.y);
+    wCtx.quadraticCurveTo(b.x + b.size * 0.3, b.y - Math.abs(wy) * 0.5, b.x + b.size, b.y + wy);
+    wCtx.stroke();
+  });
+
+  // Lightning
+  ws.lightning = ws.lightning.filter(l => l.life > 0);
+  ws.lightning.forEach(l => {
+    l.life--;
+    const a = l.life / 10;
+    wCtx.strokeStyle = 'rgba(200,220,255,' + a + ')';
+    wCtx.lineWidth = 2;
+    l.branches.forEach(b => {
+      wCtx.beginPath();
+      wCtx.moveTo(b.x1, b.y1);
+      wCtx.lineTo(b.x2, b.y2);
+      wCtx.stroke();
+    });
+  });
+
+  // Particles
+  ws.particles = ws.particles.filter(p => p.life > 0);
+  ws.particles.forEach(p => {
+    p.x += p.vx || 0;
+    p.y += p.vy || 0;
+    if (p.vy) p.vy += 0.02;
+    p.life--;
+    const a = p.life / (p.maxLife || 60);
+
+    if (p.type === 'heart') {
+      wCtx.fillStyle = 'rgba(' + p.color[0] + ',' + p.color[1] + ',' + p.color[2] + ',' + a + ')';
+      wCtx.font = p.size + 'px serif';
+      wCtx.fillText('♥', p.x, p.y);
+    } else {
+      wCtx.fillStyle = 'rgba(' + p.color[0] + ',' + p.color[1] + ',' + p.color[2] + ',' + a + ')';
+      wCtx.beginPath();
+      wCtx.arc(p.x, p.y, p.size * a, 0, Math.PI * 2);
+      wCtx.fill();
+    }
+  });
+
+  // Darkness overlay
+  if (ws.darkness > 0) {
+    wCtx.fillStyle = 'rgba(0,0,0,' + ws.darkness + ')';
+    wCtx.fillRect(-10, -10, W + 20, H + 20);
+  }
+
+  // Light overlay
+  if (ws.light > 0) {
+    ws.light *= 0.98;
+    wCtx.fillStyle = 'rgba(255,250,230,' + ws.light * 0.1 + ')';
+    wCtx.fillRect(-10, -10, W + 20, H + 20);
+  }
+
+  // Fog
+  if (ws.fog > 0) {
+    wCtx.fillStyle = 'rgba(150,160,170,' + ws.fog * 0.3 + ')';
+    wCtx.fillRect(-10, -10, W + 20, H + 20);
+  }
+
+  wCtx.restore();
+  requestAnimationFrame(render);
+}
+
+render();
+
+// Add blink animation
+const style = document.createElement('style');
+style.textContent = '@keyframes blink { 0%,50% { opacity:1; } 51%,100% { opacity:0; } }';
+document.head.appendChild(style);
+</script>
+</body>
+</html>
